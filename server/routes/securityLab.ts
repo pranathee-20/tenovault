@@ -136,7 +136,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
     const beforeHash = beforeDoc?.contentHash;
 
     const res = await agent.get(`/api/documents/${targetDocId}`).set('Authorization', `Bearer ${acmeAdminToken}`);
-    const passed = res.status === 404 && res.body?.code === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED';
+    const passed = res.status === 404 && (res.body?.code === 'RESOURCE_NOT_FOUND' || res.body?.code === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED');
 
     const afterDoc = await db.getRawDocumentById(targetDocId);
     const afterHash = afterDoc?.contentHash;
@@ -151,7 +151,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
       actualStatus: res.status,
       expectedDecision: 'DENIED',
       actualDecision: 'DENIED',
-      expectedReasonCode: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
+      expectedReasonCode: 'RESOURCE_NOT_FOUND',
       actualReasonCode: res.body?.code,
       beforeRecordHash: beforeHash,
       afterRecordHash: afterHash,
@@ -176,7 +176,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
       .set('Authorization', `Bearer ${acmeAdminToken}`)
       .send({ title: 'HOSTILE TAKEOVER OVERWRITE', fullContent: 'HACKED' });
 
-    const passed = res.status === 404 && res.body?.code === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED';
+    const passed = res.status === 404 && (res.body?.code === 'RESOURCE_NOT_FOUND' || res.body?.code === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED');
 
     const afterDoc = await db.getRawDocumentById(targetDocId);
     const afterHash = afterDoc?.contentHash;
@@ -191,7 +191,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
       actualStatus: res.status,
       expectedDecision: 'DENIED',
       actualDecision: 'DENIED',
-      expectedReasonCode: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
+      expectedReasonCode: 'RESOURCE_NOT_FOUND',
       actualReasonCode: res.body?.code,
       beforeRecordHash: beforeHash,
       afterRecordHash: afterHash,
@@ -212,7 +212,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
     const beforeHash = beforeDoc?.contentHash;
 
     const res = await agent.delete(`/api/documents/${targetDocId}`).set('Authorization', `Bearer ${acmeAdminToken}`);
-    const passed = res.status === 404 && res.body?.code === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED';
+    const passed = res.status === 404 && (res.body?.code === 'RESOURCE_NOT_FOUND' || res.body?.code === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED');
 
     const afterDoc = await db.getRawDocumentById(targetDocId);
     const afterHash = afterDoc?.contentHash;
@@ -227,7 +227,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
       actualStatus: res.status,
       expectedDecision: 'DENIED',
       actualDecision: 'DENIED',
-      expectedReasonCode: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
+      expectedReasonCode: 'RESOURCE_NOT_FOUND',
       actualReasonCode: res.body?.code,
       beforeRecordHash: beforeHash,
       afterRecordHash: afterHash,
@@ -323,7 +323,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
       actualStatus: res1.status,
       expectedDecision: 'DENIED',
       actualDecision: 'DENIED',
-      expectedReasonCode: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
+      expectedReasonCode: 'RESOURCE_NOT_FOUND',
       actualReasonCode: res1.body?.code,
       recordIntegrityPreserved: true,
       requestDetails: { method: 'GET (x3)', path: '/api/documents/[sequential-ids]', headers: { Authorization: 'Bearer [ACME_TOKEN]' } },
@@ -524,6 +524,210 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
     });
   }
 
+  // =========================================================================
+  // TEST 16: Reset Demo Endpoint Protection & Role-Based Authorization
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    // 1. Unauthenticated request -> must return 401
+    const resNoAuth = await agent.post('/api/system/reset-demo');
+    const checkNoAuth = resNoAuth.status === 401;
+
+    // 2. Viewer role request -> must return 403
+    const resViewer = await agent
+      .post('/api/system/reset-demo')
+      .set('Authorization', `Bearer ${acmeViewerToken}`);
+    const checkViewer = resViewer.status === 403;
+
+    // 3. Admin role request when DEMO_MODE='true' -> must return 200 and log audit event
+    const resAdmin = await agent
+      .post('/api/system/reset-demo')
+      .set('Authorization', `Bearer ${acmeAdminToken}`);
+    const checkAdmin = resAdmin.status === 200 && resAdmin.body?.success === true;
+
+    // Verify SYSTEM_RESET audit event exists
+    const recentEvents = await db.getAuditEventsByTenant('tenant-acme-corp', { limit: 5 });
+    const hasResetAudit = recentEvents.some((e) => e.action === 'SYSTEM_RESET');
+
+    // 4. When DEMO_MODE is disabled ('false') -> must return 404
+    const prevDemoMode = process.env.DEMO_MODE;
+    process.env.DEMO_MODE = 'false';
+    const resDisabled = await agent
+      .post('/api/system/reset-demo')
+      .set('Authorization', `Bearer ${acmeAdminToken}`);
+    const checkDisabled = resDisabled.status === 404;
+    process.env.DEMO_MODE = prevDemoMode || 'true';
+
+    const passed = checkNoAuth && checkViewer && checkAdmin && hasResetAudit && checkDisabled;
+
+    results.push({
+      testId: 'SEC-016',
+      title: 'Reset Demo Endpoint Protection & Role-Based Authorization',
+      category: 'RBAC_ENFORCEMENT',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 200,
+      actualStatus: resAdmin.status,
+      expectedDecision: 'ALLOWED',
+      actualDecision: 'ALLOWED',
+      recordIntegrityPreserved: true,
+      requestDetails: {
+        method: 'POST',
+        path: '/api/system/reset-demo',
+        headers: { Authorization: 'Bearer [ACME_ADMIN_TOKEN]' }
+      },
+      responseDetails: {
+        unauthenticatedDenied: checkNoAuth,
+        viewerRoleDenied: checkViewer,
+        adminAllowed: checkAdmin,
+        auditLogged: hasResetAudit,
+        disabledReturns404: checkDisabled
+      },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 17: Demo Accounts Endpoint Gating via DEMO_MODE Configuration
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    // 1. When DEMO_MODE is 'true' -> returns 200 with synthetic demo accounts
+    const prevDemoMode = process.env.DEMO_MODE;
+    process.env.DEMO_MODE = 'true';
+    const resEnabled = await agent.get('/api/auth/demo-accounts');
+    const checkEnabled = resEnabled.status === 200 && Boolean(resEnabled.body?.accountsByTenant);
+
+    // 2. When DEMO_MODE is 'false' -> returns 404
+    process.env.DEMO_MODE = 'false';
+    const resDisabled = await agent.get('/api/auth/demo-accounts');
+    const checkDisabled = resDisabled.status === 404;
+    process.env.DEMO_MODE = prevDemoMode || 'true';
+
+    const passed = checkEnabled && checkDisabled;
+
+    results.push({
+      testId: 'SEC-017',
+      title: 'Demo Accounts Endpoint Gating via DEMO_MODE Configuration',
+      category: 'AUTH_INTEGRITY',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 200,
+      actualStatus: resEnabled.status,
+      expectedDecision: 'ALLOWED',
+      actualDecision: 'ALLOWED',
+      recordIntegrityPreserved: true,
+      requestDetails: { method: 'GET', path: '/api/auth/demo-accounts', headers: {} },
+      responseDetails: {
+        enabledReturns200: checkEnabled,
+        disabledReturns404: checkDisabled
+      },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 18: Foreign vs Non-Existent Document Response Indistinguishability
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    const resMissing = await agent
+      .get('/api/documents/doc-acme-nonexistent-999')
+      .set('Authorization', `Bearer ${acmeAdminToken}`);
+
+    const resForeign = await agent
+      .get('/api/documents/doc-blue-001')
+      .set('Authorization', `Bearer ${acmeAdminToken}`);
+
+    const statusMatches = resMissing.status === 404 && resForeign.status === 404;
+    const errorMatches = resMissing.body?.error === 'Document not found' && resForeign.body?.error === 'Document not found';
+    const codeMatches = resMissing.body?.code === 'RESOURCE_NOT_FOUND' && resForeign.body?.code === 'RESOURCE_NOT_FOUND';
+    const missingKeys = Object.keys(resMissing.body || {}).sort().join(',');
+    const foreignKeys = Object.keys(resForeign.body || {}).sort().join(',');
+    const shapeMatches = missingKeys === foreignKeys && missingKeys.includes('code') && missingKeys.includes('error');
+
+    const passed = statusMatches && errorMatches && codeMatches && shapeMatches;
+
+    results.push({
+      testId: 'SEC-018',
+      title: 'Foreign vs Non-Existent Document Response Indistinguishability',
+      category: 'CROSS_TENANT_ISOLATION',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 404,
+      actualStatus: resForeign.status,
+      expectedDecision: 'DENIED',
+      actualDecision: 'DENIED',
+      expectedReasonCode: 'RESOURCE_NOT_FOUND',
+      actualReasonCode: resForeign.body?.code,
+      recordIntegrityPreserved: true,
+      requestDetails: {
+        method: 'GET',
+        path: '/api/documents/[foreign vs missing]',
+        headers: { Authorization: 'Bearer [ACME_TOKEN]' }
+      },
+      responseDetails: {
+        missingStatus: resMissing.status,
+        foreignStatus: resForeign.status,
+        identicalBodyShape: shapeMatches,
+        missingBody: resMissing.body,
+        foreignBody: resForeign.body
+      },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 19: Target Tenant Anonymization in Attacker Audit Logs & Exports
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    // Trigger cross-tenant probe
+    await agent.get('/api/documents/doc-blue-001').set('Authorization', `Bearer ${acmeAdminToken}`);
+
+    // Fetch caller's audit log
+    const resEvents = await agent.get('/api/audit-events').set('Authorization', `Bearer ${acmeAdminToken}`);
+    const events: any[] = resEvents.body?.events || [];
+    const deniedEvents = events.filter((e) => e.denialReasonCode === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED');
+
+    const detailSanitized = deniedEvents.length > 0 && deniedEvents[0].safeDetail === 'Cross-tenant access attempt blocked';
+    const noTargetTenantInApi = events.every((e) => typeof e.targetTenantId === 'undefined');
+
+    // Fetch CSV export
+    const resCsv = await agent.get('/api/audit-events/export?format=csv').set('Authorization', `Bearer ${acmeAdminToken}`);
+    const csvHasNoTargetColumn = !resCsv.text.includes('Target Tenant ID');
+    const csvHasNoVictimTenant = !resCsv.text.includes('tenant-bluenova-sys');
+
+    // Fetch JSON export
+    const resJson = await agent.get('/api/audit-events/export?format=json').set('Authorization', `Bearer ${acmeAdminToken}`);
+    const jsonEvents: any[] = resJson.body?.events || [];
+    const noTargetTenantInExport = jsonEvents.every((e) => typeof e.targetTenantId === 'undefined');
+
+    const passed = detailSanitized && noTargetTenantInApi && csvHasNoTargetColumn && csvHasNoVictimTenant && noTargetTenantInExport;
+
+    results.push({
+      testId: 'SEC-019',
+      title: 'Target Tenant Anonymization in Attacker Audit Logs & Exports',
+      category: 'CROSS_TENANT_ISOLATION',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 200,
+      actualStatus: resEvents.status,
+      expectedDecision: 'ALLOWED',
+      actualDecision: 'ALLOWED',
+      recordIntegrityPreserved: true,
+      requestDetails: {
+        method: 'GET',
+        path: '/api/audit-events & /export',
+        headers: { Authorization: 'Bearer [ACME_TOKEN]' }
+      },
+      responseDetails: {
+        detailSanitized,
+        noTargetTenantInApi,
+        csvHasNoTargetColumn,
+        csvHasNoVictimTenant,
+        noTargetTenantInExport
+      },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
   const passedCount = results.filter((r) => r.status === 'PASS').length;
   const failedCount = results.filter((r) => r.status === 'FAIL').length;
 
@@ -660,6 +864,26 @@ router.get('/coverage', async (_req: Request, res: Response): Promise<void> => {
       testedInLab: true,
       testStatus: getTestStatus(['SEC-015']),
       associatedSecurityTests: ['SEC-015']
+    },
+    {
+      method: 'POST',
+      path: '/api/system/reset-demo',
+      description: 'Reset synthetic demo dataset (gated by DEMO_MODE, Admin role required, audit logged)',
+      requiredRole: 'Admin',
+      tenantGuardSteps: ['Step 1: Auth', 'Step 2: Membership', 'Step 3: Role (Admin only)', 'DEMO_MODE Check', 'Audit Logging'],
+      testedInLab: true,
+      testStatus: getTestStatus(['SEC-016']),
+      associatedSecurityTests: ['SEC-016']
+    },
+    {
+      method: 'GET',
+      path: '/api/auth/demo-accounts',
+      description: 'Expose synthetic accounts for testing (gated by DEMO_MODE, disabled in production)',
+      requiredRole: 'None',
+      tenantGuardSteps: ['DEMO_MODE Check'],
+      testedInLab: true,
+      testStatus: getTestStatus(['SEC-017']),
+      associatedSecurityTests: ['SEC-017']
     }
   ];
 

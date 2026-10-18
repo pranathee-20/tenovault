@@ -12,6 +12,11 @@ import securityLabRoutes from './routes/securityLab.js';
 import anomaliesRoutes from './routes/anomalies.js';
 import openapiRoutes from './routes/openapi.js';
 import { db } from './db/postgresAdapter.js';
+import { tenantGuardAuth, requireRole, recordAuditSafely, getClientIp } from './middleware/tenantGuard.js';
+
+if (process.env.DEMO_MODE === undefined && process.env.NODE_ENV !== 'production') {
+  process.env.DEMO_MODE = 'true';
+}
 
 export const app = express();
 
@@ -39,14 +44,44 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
-// System reset endpoint (for demo / hackathon re-testing)
-app.post('/api/system/reset-demo', async (_req: Request, res: Response) => {
-  await db.resetToSeed();
-  res.status(200).json({
-    success: true,
-    message: 'Demo dataset restored to pristine initial state with synthetic tenants and audit seed.'
-  });
-});
+// System reset endpoint (protected: admin only, DEMO_MODE only, audit logged)
+app.post(
+  '/api/system/reset-demo',
+  (req: Request, res: Response, next: NextFunction) => {
+    if (process.env.DEMO_MODE !== 'true') {
+      res.status(404).json({ error: 'Endpoint not found', code: 'NOT_FOUND' });
+      return;
+    }
+    next();
+  },
+  tenantGuardAuth,
+  requireRole(['admin']),
+  async (req: Request, res: Response): Promise<void> => {
+    await db.resetToSeed();
+
+    await recordAuditSafely({
+      requestId: req.requestId || 'req-reset-demo',
+      tenantId: req.tenantId!,
+      actorUserId: req.user!.id,
+      actorEmail: req.user!.email,
+      actorRole: req.user!.role,
+      action: 'SYSTEM_RESET',
+      resourceType: 'system',
+      resourceId: 'seed-dataset',
+      decision: 'ALLOWED',
+      safeDetail: `Tenant '${req.tenantId}' administrator '${req.user!.email}' initiated synthetic demo database reset`,
+      ipAddress: getClientIp(req),
+      userAgent: req.headers['user-agent'] || 'unknown',
+      severity: 'WARNING'
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Demo dataset restored to pristine initial state with synthetic tenants and audit seed.',
+      requestId: req.requestId
+    });
+  }
+);
 
 // Mount modular API routers
 app.use('/api/auth', authRoutes);

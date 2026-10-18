@@ -5,6 +5,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { db } from '../db/postgresAdapter.js';
 import { SafeUser, UserRole, DenialReasonCode, AuditAction } from '../types.js';
 
@@ -20,7 +21,22 @@ declare global {
   }
 }
 
-export const JWT_SECRET = process.env.JWT_SECRET || 'tenovault-super-secure-jwt-signing-secret-key-2026';
+function initJwtSecret(): string {
+  if (process.env.JWT_SECRET) {
+    return process.env.JWT_SECRET;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('FATAL: JWT_SECRET environment variable is missing in production mode.');
+  }
+  // In development only, generate a random secret at startup
+  return crypto.randomBytes(32).toString('hex');
+}
+
+export const JWT_SECRET = initJwtSecret();
+
+export function generateRequestId(): string {
+  return `req-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+}
 
 /**
  * TenantGuard Step 1 & 2:
@@ -30,7 +46,7 @@ export const JWT_SECRET = process.env.JWT_SECRET || 'tenovault-super-secure-jwt-
  * CRITICAL DEFENSE: Never trusts any client-supplied x-tenant-id, body tenantId, or query tenantId.
  */
 export async function tenantGuardAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const requestId = (req.headers['x-request-id'] as string) || `req-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+  const requestId = generateRequestId();
   req.requestId = requestId;
 
   // Check for Bearer token in Authorization header
@@ -256,7 +272,7 @@ export async function verifyResourceOwnership(
     });
 
     res.status(404).json({
-      error: 'Document not found or access denied',
+      error: 'Document not found',
       code: 'RESOURCE_NOT_FOUND',
       requestId: req.requestId
     });
@@ -274,10 +290,10 @@ export async function verifyResourceOwnership(
       action,
       resourceType: 'document',
       resourceId: targetResourceId,
-      targetTenantId: rawDoc.tenantId, // Document owner's tenant
+      targetTenantId: rawDoc.tenantId, // Document owner's tenant (internal audit ledger only)
       decision: 'DENIED',
       denialReasonCode: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
-      safeDetail: `Cross-tenant isolation enforced: Actor from tenant '${callerTenantId}' blocked from accessing resource '${targetResourceId}' owned by tenant '${rawDoc.tenantId}'`,
+      safeDetail: 'Cross-tenant access attempt blocked',
       ipAddress: getClientIp(req),
       userAgent: req.headers['user-agent'] || 'unknown',
       severity: 'CRITICAL'
@@ -295,16 +311,16 @@ export async function verifyResourceOwnership(
       resourceId: targetResourceId,
       decision: 'DENIED',
       denialReasonCode: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
-      safeDetail: `Inbound cross-tenant breach attempt intercepted: external user (${req.user?.email}) from tenant '${callerTenantId}' blocked from ${action}`,
+      safeDetail: `Inbound cross-tenant breach attempt intercepted: external user (${req.user?.email}) blocked from ${action}`,
       ipAddress: getClientIp(req),
       userAgent: req.headers['user-agent'] || 'unknown',
       severity: 'CRITICAL'
     });
 
-    // SAFE RESPONSE: Return 404 (or safe 403) so client cannot confirm whether resource exists
+    // SAFE RESPONSE: Return identical 404 matching missing document shape and code
     res.status(404).json({
-      error: 'Document not found or access denied',
-      code: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
+      error: 'Document not found',
+      code: 'RESOURCE_NOT_FOUND',
       requestId: req.requestId
     });
     return false;

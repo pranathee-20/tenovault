@@ -168,6 +168,11 @@ router.post('/logout', tenantGuardAuth, async (req: Request, res: Response): Pro
  * Safe development helper listing synthetic accounts and their roles
  */
 router.get('/demo-accounts', async (_req: Request, res: Response): Promise<void> => {
+  if (process.env.DEMO_MODE !== 'true') {
+    res.status(404).json({ error: 'Endpoint not found', code: 'NOT_FOUND' });
+    return;
+  }
+
   const tenants = await db.getAllTenants();
   const accountsByTenant: Record<string, any> = {};
 

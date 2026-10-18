@@ -65,7 +65,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 
   const doc = await db.getDocumentById(req.tenantId!, docId);
   if (!doc) {
-    res.status(404).json({ error: 'Document not found or access denied', code: 'RESOURCE_NOT_FOUND' });
+    res.status(404).json({ error: 'Document not found', code: 'RESOURCE_NOT_FOUND', requestId: req.requestId });
     return;
   }
 
@@ -170,7 +170,7 @@ router.put('/:id', requireRole(['admin', 'editor']), async (req: Request, res: R
   );
 
   if (!updatedDoc) {
-    res.status(404).json({ error: 'Document not found or access denied', code: 'RESOURCE_NOT_FOUND' });
+    res.status(404).json({ error: 'Document not found', code: 'RESOURCE_NOT_FOUND', requestId: req.requestId });
     return;
   }
 
@@ -209,7 +209,7 @@ router.delete('/:id', requireRole(['admin']), async (req: Request, res: Response
 
   const success = await db.deleteDocument(req.tenantId!, docId);
   if (!success) {
-    res.status(404).json({ error: 'Document not found or access denied', code: 'RESOURCE_NOT_FOUND' });
+    res.status(404).json({ error: 'Document not found', code: 'RESOURCE_NOT_FOUND', requestId: req.requestId });
     return;
   }
 

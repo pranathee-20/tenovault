@@ -14,7 +14,7 @@ interface NavbarProps {
 }
 
 export function Navbar({ currentTab, onRefresh }: NavbarProps) {
-  const { user, tenant, switchUser } = useAuth();
+  const { user, tenant, token, switchUser } = useAuth();
   const { addToast } = useToast();
   const [isResetting, setIsResetting] = useState(false);
 
@@ -46,12 +46,16 @@ export function Navbar({ currentTab, onRefresh }: NavbarProps) {
   const handleResetDemoData = async () => {
     setIsResetting(true);
     try {
-      const res = await fetch('/api/system/reset-demo', { method: 'POST' });
+      const res = await fetch('/api/system/reset-demo', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         addToast('success', 'Seed Data Restored', 'Restored pristine synthetic tenants, documents, and audit logs.');
         if (onRefresh) onRefresh();
       } else {
-        addToast('error', 'Reset Failed', 'Unable to reset demo dataset.');
+        const errData = await res.json().catch(() => ({}));
+        addToast('error', 'Reset Failed', errData.error || 'Only administrators can reset demo data.');
       }
     } catch {
       addToast('error', 'Reset Failed', 'Network error during reset.');

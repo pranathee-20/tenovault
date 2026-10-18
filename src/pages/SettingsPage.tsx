@@ -26,7 +26,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 
 export function SettingsPage() {
-  const { user, tenant, logout } = useAuth();
+  const { user, tenant, token, logout } = useAuth();
   const { addToast } = useToast();
 
   const [activeTab, setActiveTab] = useState<'general' | 'rls'>('general');
@@ -119,9 +119,15 @@ CREATE POLICY tenant_isolation_audit_no_delete ON audit_events
   const handleResetDemoData = async () => {
     setIsResetting(true);
     try {
-      const res = await fetch('/api/system/reset-demo', { method: 'POST' });
+      const res = await fetch('/api/system/reset-demo', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       if (res.ok) {
         addToast('success', 'Seed Data Restored', 'Synthetic tenants, users, documents, and audit events restored.');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        addToast('error', 'Reset Failed', errData.error || 'Only administrators can reset demo data.');
       }
     } catch {
       addToast('error', 'Reset Failed', 'Network error.');

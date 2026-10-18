@@ -29,9 +29,12 @@ router.get('/', requireRole(['admin', 'editor']), async (req: Request, res: Resp
     limit: limit ? parseInt(limit as string, 10) : 50
   });
 
+  // Remove targetTenantId from API response to prevent target company leakage
+  const safeEvents = events.map(({ targetTenantId: _discard, ...rest }) => rest);
+
   res.status(200).json({
-    events,
-    total: events.length,
+    events: safeEvents,
+    total: safeEvents.length,
     tenantId,
     requestId: req.requestId
   });
@@ -101,7 +104,6 @@ router.get('/export', requireRole(['admin', 'editor']), async (req: Request, res
       'Action',
       'Resource Type',
       'Resource ID',
-      'Target Tenant ID',
       'Decision',
       'Denial Reason Code',
       'Safe Explanation',
@@ -120,7 +122,6 @@ router.get('/export', requireRole(['admin', 'editor']), async (req: Request, res
       escapeCsv(ev.action),
       escapeCsv(ev.resourceType),
       escapeCsv(ev.resourceId),
-      escapeCsv(ev.targetTenantId || ''),
       escapeCsv(ev.decision),
       escapeCsv(ev.denialReasonCode || ''),
       escapeCsv(ev.safeDetail),
@@ -134,7 +135,8 @@ router.get('/export', requireRole(['admin', 'editor']), async (req: Request, res
     return;
   }
 
-  // JSON export
+  // JSON export (anonymized: targetTenantId stripped)
+  const safeEvents = events.map(({ targetTenantId: _discard, ...rest }) => rest);
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   res.status(200).send(
@@ -145,11 +147,11 @@ router.get('/export', requireRole(['admin', 'editor']), async (req: Request, res
           tenantId,
           exportedBy: req.user!.email,
           exportedAt: new Date().toISOString(),
-          recordCount: events.length,
+          recordCount: safeEvents.length,
           format: 'JSON',
           isolationEnforced: true
         },
-        events
+        events: safeEvents
       },
       null,
       2
@@ -223,8 +225,10 @@ router.get('/:id', requireRole(['admin', 'editor']), async (req: Request, res: R
     return;
   }
 
+  const { targetTenantId: _discard, ...safeEvent } = event;
+
   res.status(200).json({
-    event,
+    event: safeEvent,
     requestId: req.requestId
   });
 });

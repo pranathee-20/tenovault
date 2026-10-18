@@ -2,5 +2,7 @@
   "name": "TENOVAULT - Tenant Safe Workspace Portal",
   "description": "Multi-tenant SaaS workspace portal with TenantGuard server-side authorization, TenantTrace structured audit logging, security test lab, and attack simulator.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
