@@ -8,6 +8,7 @@ import supertest from 'supertest';
 import jwt from 'jsonwebtoken';
 import { db } from '../db/postgresAdapter.js';
 import { JWT_SECRET, tenantGuardAuth } from '../middleware/tenantGuard.js';
+import { clearAllEmailFailures } from './auth.js';
 import { SecurityTestExecutionResult, SecurityTestRunSummary, ApiRouteCoverage } from '../types.js';
 
 const router = Router();
@@ -19,6 +20,7 @@ router.use(tenantGuardAuth);
  * Execute the complete 14-point backend security test suite using real Supertest calls
  */
 export async function runAllSecurityTests(appInstance: any): Promise<SecurityTestRunSummary> {
+  clearAllEmailFailures();
   const startTime = Date.now();
   const results: SecurityTestExecutionResult[] = [];
   const agent = supertest(appInstance);
@@ -902,7 +904,7 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
       const res = await agent
         .post('/api/auth/login')
         .set('X-Forwarded-For', `10.0.0.${10 + i}`)
-        .send({ email: 'alice@acme.test', password: 'WrongPassword123!' });
+        .send({ email: 'ratelimit-probe@acme.test', password: 'WrongPassword123!' });
       if (res.status === 429 && res.body?.code === 'RATE_LIMIT_EXCEEDED') {
         triggered429 = true;
         break;

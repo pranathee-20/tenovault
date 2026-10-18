@@ -4,7 +4,7 @@
  */
 
 import express, { Request, Response, NextFunction } from 'express';
-import authRoutes from './routes/auth.js';
+import authRoutes, { clearAllEmailFailures } from './routes/auth.js';
 import documentRoutes from './routes/documents.js';
 import auditRoutes from './routes/auditEvents.js';
 import simulatorRoutes from './routes/simulator.js';
@@ -58,6 +58,7 @@ app.post(
   requireRole(['admin']),
   async (req: Request, res: Response): Promise<void> => {
     await db.resetToSeed();
+    clearAllEmailFailures();
 
     await recordAuditSafely({
       requestId: req.requestId || 'req-reset-demo',

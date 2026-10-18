@@ -25,6 +25,10 @@ interface EmailFailureBucket {
 }
 const emailFailureStore = new Map<string, EmailFailureBucket>();
 
+export function clearAllEmailFailures() {
+  emailFailureStore.clear();
+}
+
 function cleanupEmailFailures() {
   const now = Date.now();
   for (const [k, v] of emailFailureStore.entries()) {
