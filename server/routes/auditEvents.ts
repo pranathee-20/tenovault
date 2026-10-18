@@ -224,7 +224,7 @@ router.get('/stats', requireRole(['admin']), async (req: Request, res: Response)
  * GET /api/audit-events/:id
  * Retrieve single audit event detail. Enforces tenant boundary check.
  */
-router.get('/:id', requireRole(['admin', 'editor']), async (req: Request, res: Response): Promise<void> => {
+router.get('/:id', requireRole(['admin']), async (req: Request, res: Response): Promise<void> => {
   const eventId = req.params.id;
   const event = await db.getAuditEventById(req.tenantId!, eventId);
 
