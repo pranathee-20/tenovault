@@ -4,7 +4,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import { getClientIp, recordAuditSafely } from './tenantGuard.js';
+import { getClientIp, recordAuditSafely, generateRequestId } from './tenantGuard.js';
 
 interface RateLimitBucket {
   count: number;
@@ -13,11 +13,21 @@ interface RateLimitBucket {
 
 const memoryLimitStore = new Map<string, RateLimitBucket>();
 
+function cleanupExpiredBuckets() {
+  const now = Date.now();
+  for (const [k, v] of memoryLimitStore.entries()) {
+    if (now > v.resetAt) {
+      memoryLimitStore.delete(k);
+    }
+  }
+}
+
 /**
  * In-memory sliding window rate limiter
  */
 export function createRateLimiter(options: { maxRequests: number; windowMs: number; endpointName: string }) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    cleanupExpiredBuckets();
     const ip = getClientIp(req);
     const key = `${options.endpointName}:${ip}`;
     const now = Date.now();
@@ -36,8 +46,9 @@ export function createRateLimiter(options: { maxRequests: number; windowMs: numb
       const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
       res.setHeader('Retry-After', retryAfter);
 
+      const requestId = req.requestId || generateRequestId();
       await recordAuditSafely({
-        requestId: (req.headers['x-request-id'] as string) || `req-ratelimit-${now}`,
+        requestId,
         tenantId: req.tenantId || 'unauthenticated',
         actorUserId: req.user?.id || 'anonymous',
         actorEmail: req.user?.email || 'anonymous',
@@ -56,7 +67,8 @@ export function createRateLimiter(options: { maxRequests: number; windowMs: numb
       res.status(429).json({
         error: 'Too many requests. Please wait before retrying.',
         code: 'RATE_LIMIT_EXCEEDED',
-        retryAfterSeconds: retryAfter
+        retryAfterSeconds: retryAfter,
+        requestId
       });
       return;
     }

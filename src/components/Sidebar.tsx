@@ -32,10 +32,14 @@ export function Sidebar({ currentTab, setCurrentTab }: SidebarProps) {
   const navItems = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
     { id: 'documents', label: 'Workspace Documents', icon: FileText, badge: 'Protected' },
-    { id: 'audit', label: 'TenantTrace Audit', icon: Activity, badge: 'Live' },
+    ...(user?.role === 'admin'
+      ? [
+          { id: 'audit', label: 'TenantTrace Audit', icon: Activity, badge: 'Live' },
+          { id: 'anomalies', label: 'Suspicious Activity', icon: AlertTriangle }
+        ]
+      : []),
     { id: 'security-lab', label: 'Security Test Lab', icon: TestTube2, highlight: true },
     { id: 'simulator', label: 'Attack Simulator', icon: Crosshair },
-    { id: 'anomalies', label: 'Suspicious Activity', icon: AlertTriangle },
     { id: 'api-coverage', label: 'API & Test Coverage', icon: BookOpen },
     { id: 'settings', label: 'Settings & RLS Defense', icon: Settings }
   ];

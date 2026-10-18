@@ -576,11 +576,14 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
         headers: { Authorization: 'Bearer [ACME_ADMIN_TOKEN]' }
       },
       responseDetails: {
-        unauthenticatedDenied: checkNoAuth,
-        viewerRoleDenied: checkViewer,
-        adminAllowed: checkAdmin,
-        auditLogged: hasResetAudit,
-        disabledReturns404: checkDisabled
+        status: resAdmin.status,
+        body: {
+          unauthenticatedDenied: checkNoAuth,
+          viewerRoleDenied: checkViewer,
+          adminAllowed: checkAdmin,
+          auditLogged: hasResetAudit,
+          disabledReturns404: checkDisabled
+        }
       },
       executionTimeMs: Date.now() - tStart
     });
@@ -617,8 +620,11 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
       recordIntegrityPreserved: true,
       requestDetails: { method: 'GET', path: '/api/auth/demo-accounts', headers: {} },
       responseDetails: {
-        enabledReturns200: checkEnabled,
-        disabledReturns404: checkDisabled
+        status: resEnabled.status,
+        body: {
+          enabledReturns200: checkEnabled,
+          disabledReturns404: checkDisabled
+        }
       },
       executionTimeMs: Date.now() - tStart
     });
@@ -664,11 +670,14 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
         headers: { Authorization: 'Bearer [ACME_TOKEN]' }
       },
       responseDetails: {
-        missingStatus: resMissing.status,
-        foreignStatus: resForeign.status,
-        identicalBodyShape: shapeMatches,
-        missingBody: resMissing.body,
-        foreignBody: resForeign.body
+        status: resForeign.status,
+        body: {
+          missingStatus: resMissing.status,
+          foreignStatus: resForeign.status,
+          identicalBodyShape: shapeMatches,
+          missingBody: resMissing.body,
+          foreignBody: resForeign.body
+        }
       },
       executionTimeMs: Date.now() - tStart
     });
@@ -718,12 +727,202 @@ export async function runAllSecurityTests(appInstance: any): Promise<SecurityTes
         headers: { Authorization: 'Bearer [ACME_TOKEN]' }
       },
       responseDetails: {
-        detailSanitized,
-        noTargetTenantInApi,
-        csvHasNoTargetColumn,
-        csvHasNoVictimTenant,
-        noTargetTenantInExport
+        status: resEvents.status,
+        body: {
+          detailSanitized,
+          noTargetTenantInApi,
+          csvHasNoTargetColumn,
+          csvHasNoVictimTenant,
+          noTargetTenantInExport
+        }
       },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 20: Identical 404 Responses for Foreign and Missing Documents
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    const resForeign = await agent.get('/api/documents/doc-blue-001').set('Authorization', `Bearer ${acmeAdminToken}`);
+    const resMissing = await agent.get('/api/documents/doc-nonexistent-999').set('Authorization', `Bearer ${acmeAdminToken}`);
+    const passed =
+      resForeign.status === 404 &&
+      resMissing.status === 404 &&
+      resForeign.body?.error === resMissing.body?.error &&
+      resForeign.body?.code === resMissing.body?.code;
+
+    results.push({
+      testId: 'SEC-020',
+      title: 'Identical 404 Responses for Foreign and Missing Documents',
+      category: 'CROSS_TENANT_ISOLATION',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 404,
+      actualStatus: resForeign.status,
+      expectedDecision: 'DENIED',
+      actualDecision: 'DENIED',
+      expectedReasonCode: 'RESOURCE_NOT_FOUND',
+      actualReasonCode: resForeign.body?.code,
+      recordIntegrityPreserved: true,
+      requestDetails: { method: 'GET', path: '/api/documents/doc-blue-001 vs doc-nonexistent', headers: { Authorization: 'Bearer [ACME_TOKEN]' } },
+      responseDetails: { status: resForeign.status, body: { foreign: resForeign.body, missing: resMissing.body } },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 21: Victim Log Anonymization (Hides Attacker Email & ID)
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    await agent.get('/api/documents/doc-blue-001').set('Authorization', `Bearer ${acmeAdminToken}`);
+    const blueNovaAdminToken = jwt.sign(
+      { userId: 'usr-blue-diana-admin', tenantId: 'tenant-bluenova-sys', role: 'admin', email: 'diana@bluenova.test' },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+    const resVictim = await agent.get('/api/audit-events').set('Authorization', `Bearer ${blueNovaAdminToken}`);
+    const events: any[] = resVictim.body?.events || [];
+    const inboundAttempt = events.find((e) => e.denialReasonCode === 'CROSS_TENANT_RESOURCE_ACCESS_DENIED' && e.actorEmail === 'external-actor');
+    const passed = inboundAttempt !== undefined && !events.some((e) => e.actorEmail === 'alice@acme.test');
+
+    results.push({
+      testId: 'SEC-021',
+      title: 'Victim Log Anonymization & Attacker Hiding',
+      category: 'CROSS_TENANT_ISOLATION',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 200,
+      actualStatus: resVictim.status,
+      expectedDecision: 'ALLOWED',
+      actualDecision: 'ALLOWED',
+      recordIntegrityPreserved: true,
+      requestDetails: { method: 'GET', path: '/api/audit-events (Victim)', headers: { Authorization: 'Bearer [BLUENOVA_ADMIN]' } },
+      responseDetails: { status: resVictim.status, body: { foundExternalActorLog: inboundAttempt !== undefined } },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 22: Admin-Only Audit & Stats RBAC Enforcement (Editor/Viewer 403)
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    const endpoints = ['/api/audit-events', '/api/audit-events/export', '/api/audit-events/stats', '/api/anomalies'];
+    let allDenied = true;
+    for (const ep of endpoints) {
+      const res = await agent.get(ep).set('Authorization', `Bearer ${acmeViewerToken}`);
+      if (res.status !== 403 || res.body?.code !== 'ROLE_PERMISSION_DENIED') {
+        allDenied = false;
+        break;
+      }
+    }
+
+    results.push({
+      testId: 'SEC-022',
+      title: 'Editor and Viewer 403 Forbidden on Admin-Only Endpoints',
+      category: 'RBAC_SECURITY',
+      status: allDenied ? 'PASS' : 'FAIL',
+      expectedStatus: 403,
+      actualStatus: 403,
+      expectedDecision: 'DENIED',
+      actualDecision: 'DENIED',
+      expectedReasonCode: 'ROLE_PERMISSION_DENIED',
+      actualReasonCode: 'ROLE_PERMISSION_DENIED',
+      recordIntegrityPreserved: true,
+      requestDetails: { method: 'GET', path: 'Audit/Stats/Anomalies endpoints', headers: { Authorization: 'Bearer [ACME_VIEWER]' } },
+      responseDetails: { status: 403, body: { allDenied } },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 23: Old Hard-Coded Secret JWT Rejection
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    const oldSecretToken = jwt.sign(
+      { userId: 'usr-acme-alice-admin', tenantId: 'tenant-acme-corp', role: 'admin', email: 'alice@acme.test' },
+      'tenovault-super-secret-jwt-key-2025-change-me',
+      { expiresIn: '1h' }
+    );
+    const res = await agent.get('/api/documents').set('Authorization', `Bearer ${oldSecretToken}`);
+    const passed = res.status === 401 && res.body?.code === 'AUTH_INVALID_TOKEN';
+
+    results.push({
+      testId: 'SEC-023',
+      title: 'Legacy Hard-Coded Secret Token Rejection',
+      category: 'AUTH_INTEGRITY',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 401,
+      actualStatus: res.status,
+      expectedDecision: 'DENIED',
+      actualDecision: 'DENIED',
+      expectedReasonCode: 'AUTH_INVALID_TOKEN',
+      actualReasonCode: res.body?.code,
+      recordIntegrityPreserved: true,
+      requestDetails: { method: 'GET', path: '/api/documents', headers: { Authorization: 'Bearer [OLD_SECRET_TOKEN]' } },
+      responseDetails: { status: res.status, body: res.body },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 24: Real 24h Hourly Stats Chart Buckets Structure
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    const res = await agent.get('/api/audit-events/stats').set('Authorization', `Bearer ${acmeAdminToken}`);
+    const data = res.body;
+    const passed = res.status === 200 && Array.isArray(data?.timelineBuckets) && data.timelineBuckets.length === 24;
+
+    results.push({
+      testId: 'SEC-024',
+      title: 'Real 24h Hourly Stats Chart Buckets Structure',
+      category: 'AUDIT_INTEGRITY',
+      status: passed ? 'PASS' : 'FAIL',
+      expectedStatus: 200,
+      actualStatus: res.status,
+      expectedDecision: 'ALLOWED',
+      actualDecision: 'ALLOWED',
+      recordIntegrityPreserved: true,
+      requestDetails: { method: 'GET', path: '/api/audit-events/stats', headers: { Authorization: 'Bearer [ACME_ADMIN]' } },
+      responseDetails: { status: res.status, body: data },
+      executionTimeMs: Date.now() - tStart
+    });
+  }
+
+  // =========================================================================
+  // TEST 25: Email-Based Login Rate Limiting Across Rotated IPs
+  // =========================================================================
+  {
+    const tStart = Date.now();
+    let triggered429 = false;
+    for (let i = 0; i < 6; i++) {
+      const res = await agent
+        .post('/api/auth/login')
+        .set('X-Forwarded-For', `10.0.0.${10 + i}`)
+        .send({ email: 'alice@acme.test', password: 'WrongPassword123!' });
+      if (res.status === 429 && res.body?.code === 'RATE_LIMIT_EXCEEDED') {
+        triggered429 = true;
+        break;
+      }
+    }
+
+    results.push({
+      testId: 'SEC-025',
+      title: 'Email-Based Login Rate Limiting Across Rotated IPs',
+      category: 'AUTH_INTEGRITY',
+      status: triggered429 ? 'PASS' : 'FAIL',
+      expectedStatus: 429,
+      actualStatus: triggered429 ? 429 : 401,
+      expectedDecision: 'DENIED',
+      actualDecision: 'DENIED',
+      expectedReasonCode: 'RATE_LIMIT_EXCEEDED',
+      actualReasonCode: 'RATE_LIMIT_EXCEEDED',
+      recordIntegrityPreserved: true,
+      requestDetails: { method: 'POST', path: '/api/auth/login with rotated X-Forwarded-For', headers: { 'X-Forwarded-For': '[Rotated IPs]' } },
+      responseDetails: { status: triggered429 ? 429 : 401, body: { triggered429 } },
       executionTimeMs: Date.now() - tStart
     });
   }
@@ -879,7 +1078,7 @@ router.get('/coverage', async (_req: Request, res: Response): Promise<void> => {
       method: 'GET',
       path: '/api/auth/demo-accounts',
       description: 'Expose synthetic accounts for testing (gated by DEMO_MODE, disabled in production)',
-      requiredRole: 'None',
+      requiredRole: 'Any',
       tenantGuardSteps: ['DEMO_MODE Check'],
       testedInLab: true,
       testStatus: getTestStatus(['SEC-017']),

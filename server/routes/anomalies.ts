@@ -15,7 +15,7 @@ router.use(tenantGuardAuth);
  * GET /api/anomalies
  * Scans recent audit events for deterministic threat patterns
  */
-router.get('/', requireRole(['admin', 'editor']), async (req: Request, res: Response): Promise<void> => {
+router.get('/', requireRole(['admin']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = req.tenantId!;
   const alerts = await db.getSuspiciousAlerts(tenantId);
 

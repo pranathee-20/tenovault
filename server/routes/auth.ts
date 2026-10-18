@@ -7,7 +7,7 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { db } from '../db/postgresAdapter.js';
-import { JWT_SECRET, tenantGuardAuth, recordAuditSafely, getClientIp } from '../middleware/tenantGuard.js';
+import { JWT_SECRET, tenantGuardAuth, recordAuditSafely, getClientIp, generateRequestId } from '../middleware/tenantGuard.js';
 import { createRateLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
@@ -19,34 +19,89 @@ const loginRateLimiter = createRateLimiter({
   endpointName: 'auth_login'
 });
 
+interface EmailFailureBucket {
+  count: number;
+  resetAt: number;
+}
+const emailFailureStore = new Map<string, EmailFailureBucket>();
+
+function cleanupEmailFailures() {
+  const now = Date.now();
+  for (const [k, v] of emailFailureStore.entries()) {
+    if (now > v.resetAt) {
+      emailFailureStore.delete(k);
+    }
+  }
+}
+
 /**
  * POST /api/auth/login
  * Validates credentials, checks user, signs JWT with tenantId & role claims, records audit log
  */
 router.post('/login', loginRateLimiter, async (req: Request, res: Response): Promise<void> => {
   const { email, password } = req.body;
-  const requestId = (req.headers['x-request-id'] as string) || `req-login-${Date.now().toString(36)}`;
+  const requestId = req.requestId || generateRequestId();
 
   if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
-    res.status(400).json({ error: 'Email and password are required', code: 'INVALID_PAYLOAD' });
+    res.status(400).json({ error: 'Email and password are required', code: 'INVALID_PAYLOAD', requestId });
     return;
   }
 
-  const user = await db.getUserByEmail(email.trim());
+  cleanupEmailFailures();
+  const normalizedEmail = email.trim().toLowerCase();
+  const now = Date.now();
+  const emailBucket = emailFailureStore.get(normalizedEmail);
 
-  if (!user) {
+  if (emailBucket && now <= emailBucket.resetAt && emailBucket.count >= 5) {
+    const retryAfter = Math.ceil((emailBucket.resetAt - now) / 1000);
+    res.setHeader('Retry-After', retryAfter);
     await recordAuditSafely({
       requestId,
       tenantId: 'unauthenticated',
       actorUserId: 'unknown',
-      actorEmail: email.trim(),
+      actorEmail: normalizedEmail,
+      actorRole: 'unauthenticated',
+      action: 'AUTH_LOGIN',
+      resourceType: 'system',
+      resourceId: 'login-email-rate-limit',
+      decision: 'DENIED',
+      denialReasonCode: 'RATE_LIMIT_EXCEEDED',
+      safeDetail: `Too many failed login attempts for email '${normalizedEmail}'`,
+      ipAddress: getClientIp(req),
+      userAgent: req.headers['user-agent'] || 'unknown',
+      severity: 'WARNING'
+    });
+    res.status(429).json({
+      error: 'Too many failed login attempts for this account. Please wait before retrying.',
+      code: 'RATE_LIMIT_EXCEEDED',
+      retryAfterSeconds: retryAfter,
+      requestId
+    });
+    return;
+  }
+
+  const user = await db.getUserByEmail(normalizedEmail);
+
+  if (!user) {
+    const existing = emailFailureStore.get(normalizedEmail);
+    if (!existing || now > existing.resetAt) {
+      emailFailureStore.set(normalizedEmail, { count: 1, resetAt: now + 5 * 60 * 1000 });
+    } else {
+      existing.count += 1;
+    }
+
+    await recordAuditSafely({
+      requestId,
+      tenantId: 'unauthenticated',
+      actorUserId: 'unknown',
+      actorEmail: normalizedEmail,
       actorRole: 'unauthenticated',
       action: 'AUTH_LOGIN',
       resourceType: 'session',
       resourceId: 'login-attempt',
       decision: 'DENIED',
       denialReasonCode: 'AUTH_INVALID_TOKEN',
-      safeDetail: `Authentication failed: User account not found for '${email.trim()}'`,
+      safeDetail: `Authentication failed: User account not found for '${normalizedEmail}'`,
       ipAddress: getClientIp(req),
       userAgent: req.headers['user-agent'] || 'unknown',
       severity: 'WARNING'
@@ -59,6 +114,13 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
   const passwordMatch = await bcrypt.compare(password, user.passwordHash);
 
   if (!passwordMatch) {
+    const existing = emailFailureStore.get(normalizedEmail);
+    if (!existing || now > existing.resetAt) {
+      emailFailureStore.set(normalizedEmail, { count: 1, resetAt: now + 5 * 60 * 1000 });
+    } else {
+      existing.count += 1;
+    }
+
     await recordAuditSafely({
       requestId,
       tenantId: user.tenantId,
@@ -79,6 +141,9 @@ router.post('/login', loginRateLimiter, async (req: Request, res: Response): Pro
     res.status(401).json({ error: 'Invalid email or password', code: 'AUTH_INVALID_CREDENTIALS', requestId });
     return;
   }
+
+  // Successful login -> clear email failure bucket
+  emailFailureStore.delete(normalizedEmail);
 
   // Issue short-lived secure JWT with verified claims
   const tokenPayload = {

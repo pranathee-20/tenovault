@@ -41,7 +41,7 @@ interface OverviewPageProps {
 }
 
 export function OverviewPage({ onNavigateTab, onOpenAuditDetail }: OverviewPageProps) {
-  const { tenant, token } = useAuth();
+  const { user, tenant, token } = useAuth();
   const [loading, setLoading] = useState(true);
   const [docCount, setDocCount] = useState(0);
   const [stats, setStats] = useState<any>(null);
@@ -61,18 +61,20 @@ export function OverviewPage({ onNavigateTab, onOpenAuditDetail }: OverviewPageP
         setDocCount(docsData.total || 0);
       }
 
-      // 2. Audit stats
-      const statsRes = await fetch('/api/audit-events/stats', { headers });
-      if (statsRes.ok) {
-        const statsData = await statsRes.json();
-        setStats(statsData);
-      }
+      if (user?.role === 'admin') {
+        // 2. Audit stats
+        const statsRes = await fetch('/api/audit-events/stats', { headers });
+        if (statsRes.ok) {
+          const statsData = await statsRes.json();
+          setStats(statsData);
+        }
 
-      // 3. Recent events
-      const eventsRes = await fetch('/api/audit-events?limit=8', { headers });
-      if (eventsRes.ok) {
-        const eventsData = await eventsRes.json();
-        setRecentEvents(eventsData.events || []);
+        // 3. Recent events
+        const eventsRes = await fetch('/api/audit-events?limit=8', { headers });
+        if (eventsRes.ok) {
+          const eventsData = await eventsRes.json();
+          setRecentEvents(eventsData.events || []);
+        }
       }
 
       // 4. Latest Security Test Run
@@ -86,7 +88,7 @@ export function OverviewPage({ onNavigateTab, onOpenAuditDetail }: OverviewPageP
     } finally {
       setLoading(false);
     }
-  }, [token]);
+  }, [token, user?.role]);
 
   useEffect(() => {
     fetchData();

@@ -17,7 +17,7 @@ router.use(tenantGuardAuth);
  * Returns audit events strictly scoped to reviewer's authorized tenant.
  * Admin and Editor can review audit logs (Admin has full view).
  */
-router.get('/', requireRole(['admin', 'editor']), async (req: Request, res: Response): Promise<void> => {
+router.get('/', requireRole(['admin']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = req.tenantId!;
   const { action, decision, severity, search, limit } = req.query;
 
@@ -45,7 +45,7 @@ router.get('/', requireRole(['admin', 'editor']), async (req: Request, res: Resp
  * Downloads audit events strictly scoped to reviewer's authorized tenant in CSV or JSON format.
  * Strictly verifies identity, tenant membership, and role permissions.
  */
-router.get('/export', requireRole(['admin', 'editor']), async (req: Request, res: Response): Promise<void> => {
+router.get('/export', requireRole(['admin']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = req.tenantId!;
   const format = (req.query.format as string)?.toLowerCase() === 'csv' ? 'csv' : 'json';
   const { action, decision, severity, search } = req.query;
@@ -161,16 +161,26 @@ router.get('/export', requireRole(['admin', 'editor']), async (req: Request, res
 
 /**
  * GET /api/audit-events/stats
- * Aggregates decisions, reasons, and timeline metrics for dashboard visual charts
+ * Aggregates decisions, reasons, and real 24h hourly timeline metrics for dashboard visual charts
  */
-router.get('/stats', async (req: Request, res: Response): Promise<void> => {
+router.get('/stats', requireRole(['admin']), async (req: Request, res: Response): Promise<void> => {
   const tenantId = req.tenantId!;
-  const allEvents = await db.getAuditEventsByTenant(tenantId, { limit: 200 });
+  const allEvents = await db.getAuditEventsByTenant(tenantId, { limit: 5000 });
 
   let allowedCount = 0;
   let deniedCount = 0;
   const reasonBreakdown: Record<string, number> = {};
   const actionBreakdown: Record<string, number> = {};
+
+  const now = Date.now();
+  const twentyFourHoursAgo = now - 24 * 60 * 60 * 1000;
+  const hourlyMap: Record<string, { allowed: number; denied: number }> = {};
+
+  for (let i = 23; i >= 0; i--) {
+    const d = new Date(now - i * 60 * 60 * 1000);
+    const label = `${String(d.getHours()).padStart(2, '0')}:00`;
+    hourlyMap[label] = { allowed: 0, denied: 0 };
+  }
 
   allEvents.forEach((ev) => {
     if (ev.decision === 'ALLOWED') {
@@ -181,19 +191,21 @@ router.get('/stats', async (req: Request, res: Response): Promise<void> => {
       reasonBreakdown[code] = (reasonBreakdown[code] || 0) + 1;
     }
     actionBreakdown[ev.action] = (actionBreakdown[ev.action] || 0) + 1;
+
+    const evTime = new Date(ev.timestamp).getTime();
+    if (evTime >= twentyFourHoursAgo) {
+      const d = new Date(ev.timestamp);
+      const label = `${String(d.getHours()).padStart(2, '0')}:00`;
+      if (hourlyMap[label]) {
+        if (ev.decision === 'ALLOWED') hourlyMap[label].allowed++;
+        else hourlyMap[label].denied++;
+      }
+    }
   });
 
-  // Build time series buckets (hourly/daily distribution)
   const timelineBuckets: { time: string; allowed: number; denied: number }[] = [];
-  const now = new Date();
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(now.getTime() - i * 4 * 60 * 60 * 1000);
-    const label = `${d.getHours()}:00`;
-    timelineBuckets.push({
-      time: label,
-      allowed: Math.floor(allowedCount / 7) + (i === 0 ? allowedCount % 7 : 0),
-      denied: Math.floor(deniedCount / 7) + (i === 0 ? deniedCount % 7 : 0)
-    });
+  for (const [time, counts] of Object.entries(hourlyMap)) {
+    timelineBuckets.push({ time, ...counts });
   }
 
   res.status(200).json({

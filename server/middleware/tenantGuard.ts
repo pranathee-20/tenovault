@@ -25,17 +25,13 @@ function initJwtSecret(): string {
   if (process.env.JWT_SECRET) {
     return process.env.JWT_SECRET;
   }
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('FATAL: JWT_SECRET environment variable is missing in production mode.');
-  }
-  // In development only, generate a random secret at startup
   return crypto.randomBytes(32).toString('hex');
 }
 
 export const JWT_SECRET = initJwtSecret();
 
 export function generateRequestId(): string {
-  return `req-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+  return crypto.randomUUID();
 }
 
 /**
@@ -48,6 +44,7 @@ export function generateRequestId(): string {
 export async function tenantGuardAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const requestId = generateRequestId();
   req.requestId = requestId;
+  res.setHeader('X-Request-Id', requestId);
 
   // Check for Bearer token in Authorization header
   const authHeader = req.headers.authorization;
@@ -201,14 +198,14 @@ export async function tenantGuardAuth(req: Request, res: Response, next: NextFun
 export function requireRole(allowedRoles: UserRole[]) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     if (!req.user || !req.tenantId) {
-      res.status(401).json({ error: 'Unauthenticated', code: 'AUTH_NO_TOKEN' });
+      res.status(401).json({ error: 'Unauthenticated', code: 'AUTH_NO_TOKEN', requestId: req.requestId || generateRequestId() });
       return;
     }
 
     if (!allowedRoles.includes(req.user.role)) {
       const action = inferActionFromRoute(req);
       await recordAuditSafely({
-        requestId: req.requestId || 'req-unknown',
+        requestId: req.requestId || generateRequestId(),
         tenantId: req.tenantId,
         actorUserId: req.user.id,
         actorEmail: req.user.email,
@@ -229,7 +226,7 @@ export function requireRole(allowedRoles: UserRole[]) {
         code: 'ROLE_PERMISSION_DENIED',
         requiredRoles: allowedRoles,
         userRole: req.user.role,
-        requestId: req.requestId
+        requestId: req.requestId || generateRequestId()
       });
       return;
     }
@@ -251,11 +248,12 @@ export async function verifyResourceOwnership(
 ): Promise<boolean> {
   const callerTenantId = req.tenantId!;
   const rawDoc = await db.getRawDocumentById(targetResourceId);
+  const requestId = req.requestId || generateRequestId();
 
   // If document does not exist at all:
   if (!rawDoc) {
     await recordAuditSafely({
-      requestId: req.requestId || 'req-unknown',
+      requestId,
       tenantId: callerTenantId,
       actorUserId: req.user?.id || 'unknown',
       actorEmail: req.user?.email || 'unknown',
@@ -274,7 +272,7 @@ export async function verifyResourceOwnership(
     res.status(404).json({
       error: 'Document not found',
       code: 'RESOURCE_NOT_FOUND',
-      requestId: req.requestId
+      requestId
     });
     return false;
   }
@@ -282,7 +280,7 @@ export async function verifyResourceOwnership(
   // Cross-tenant breach attempt: Document belongs to a DIFFERENT tenant!
   if (rawDoc.tenantId !== callerTenantId) {
     await recordAuditSafely({
-      requestId: req.requestId || 'req-unknown',
+      requestId,
       tenantId: callerTenantId, // Log under caller tenant's audit trail
       actorUserId: req.user?.id || 'unknown',
       actorEmail: req.user?.email || 'unknown',
@@ -299,19 +297,19 @@ export async function verifyResourceOwnership(
       severity: 'CRITICAL'
     });
 
-    // Also write an alert audit log to the victim tenant's audit trail so victim admin is alerted
+    // Also write an alert audit log to the victim tenant's audit trail so victim admin is alerted (without attacker info)
     await recordAuditSafely({
-      requestId: req.requestId || 'req-unknown',
+      requestId,
       tenantId: rawDoc.tenantId,
-      actorUserId: `external-${req.user?.id}`,
-      actorEmail: req.user?.email || 'external-actor',
+      actorUserId: 'external',
+      actorEmail: 'external-actor',
       actorRole: 'unauthenticated',
       action,
       resourceType: 'document',
       resourceId: targetResourceId,
       decision: 'DENIED',
       denialReasonCode: 'CROSS_TENANT_RESOURCE_ACCESS_DENIED',
-      safeDetail: `Inbound cross-tenant breach attempt intercepted: external user (${req.user?.email}) blocked from ${action}`,
+      safeDetail: 'Blocked an external access attempt',
       ipAddress: getClientIp(req),
       userAgent: req.headers['user-agent'] || 'unknown',
       severity: 'CRITICAL'
@@ -321,7 +319,7 @@ export async function verifyResourceOwnership(
     res.status(404).json({
       error: 'Document not found',
       code: 'RESOURCE_NOT_FOUND',
-      requestId: req.requestId
+      requestId
     });
     return false;
   }
@@ -341,9 +339,11 @@ export async function recordAuditSafely(data: Parameters<typeof db.createAuditEv
 }
 
 export function getClientIp(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string') {
-    return forwarded.split(',')[0].trim();
+  if (process.env.TRUST_PROXY === 'true') {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') {
+      return forwarded.split(',')[0].trim();
+    }
   }
   return req.socket.remoteAddress || '127.0.0.1';
 }

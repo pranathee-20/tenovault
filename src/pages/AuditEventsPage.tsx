@@ -38,6 +38,18 @@ export function AuditEventsPage({ selectedEventForDetail, onClearSelectedEvent }
   const { user, tenant, token } = useAuth();
   const { addToast } = useToast();
 
+  if (user?.role !== 'admin') {
+    return (
+      <div className="p-8 text-center space-y-3 bg-slate-900/90 rounded-2xl border border-slate-800 max-w-xl mx-auto my-12">
+        <Activity className="w-12 h-12 text-rose-400 mx-auto" />
+        <h2 className="text-lg font-bold text-white">Access Denied: Admin Role Required</h2>
+        <p className="text-xs text-slate-400">
+          TenantTrace audit logs, timeline queries, and export controls are restricted to administrators.
+        </p>
+      </div>
+    );
+  }
+
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -152,7 +164,7 @@ export function AuditEventsPage({ selectedEventForDetail, onClearSelectedEvent }
     }
   };
 
-  const isViewer = user?.role === 'viewer';
+  const isViewer = (user?.role as string) === 'viewer';
 
   return (
     <div className="space-y-6">
